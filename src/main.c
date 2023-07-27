@@ -51,6 +51,16 @@
 
 /* === Macros definitions ====================================================================== */
 
+// Tamaño de pila para tareas
+#define STACK_SYSTICK 256
+#define STACK_DISPLAY 256
+#define STACK_KEYS 512
+
+// Prioridades de las tareas
+#define PRIORIDAD_SYSTICK (tskIDLE_PRIORITY + 1)
+#define PRIORIDAD_DISPLAY (tskIDLE_PRIORITY)
+#define PRIORIDAD_KEYS (tskIDLE_PRIORITY + 2)
+
 /* === Private data type declarations ========================================================== */
 typedef enum {
     SIN_CONFIGURAR,
@@ -66,6 +76,10 @@ typedef enum {
 /* === Private function declarations =========================================================== */
 
 void ActivarAlarma(bool reloj);
+
+static void TaskSysTick(void * pvParameters);
+static void TaskDisplayRefresh(void * pvParameters);
+static void TaskKeys(void * pvParameters);
 
 /* === Public variable definitions ============================================================= */
 
@@ -164,22 +178,51 @@ void DecrementarBCD(uint8_t numero[2], const uint8_t limite[2]) {
     }
 }
 
-/* === Public function implementation ========================================================= */
+static void TaskSysTick(void * pvParameters) {
+    TickType_t last_value = xTaskGetTickCount();
+    bool current_value;
+    uint8_t hora[6];
 
-int main(void) {
+    while (true) {
+        current_value = ClockUpdate(reloj);
 
+        if (modo <= MOSTRANDO_HORA) {
+            ClockGetTime(reloj, hora, sizeof(hora));
+            DisplayWriteBCD(board->display, hora, sizeof(hora));
+            if (DigitalInputGetState(board->set_time) || DigitalInputGetState(board->set_alarm)) {
+                tiempo_pulsacion++;
+            } else {
+                tiempo_pulsacion = 0;
+            }
+            if (current_value) {
+                DisplayToggleDot(board->display, 1);
+            }
+            if (AlarmGetState(reloj)) {
+                DisplayToggleDot(board->display, 3);
+            }
+        }
+        timeout++;
+        if ((timeout > 30000) && (modo > MOSTRANDO_HORA)) {
+            if (ClockGetTime(reloj, hora, sizeof(hora))) {
+                CambiarModo(MOSTRANDO_HORA);
+            } else {
+                CambiarModo(SIN_CONFIGURAR);
+            }
+            timeout = 0;
+        }
+        vTaskDelayUntil(&last_value, pdMS_TO_TICKS(1));
+    }
+}
+
+static void TaskDisplayRefresh(void * pvParameters) {
+    while (true) {
+        DisplayRefresh(board->display);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+static void TaskKeys(void * pvParameters) {
     uint8_t entrada[4];
-
-    reloj = ClockCreate(1000, SonarAlarma);
-
-    board = BoardCreate();
-
-    modo = SIN_CONFIGURAR;
-
-    SisTick_Init(1000);
-
-    CambiarModo(SIN_CONFIGURAR);
-
     while (true) {
         if (DigitalInputHasActivated(board->accept)) {
             if (modo == MOSTRANDO_HORA) {
@@ -258,47 +301,36 @@ int main(void) {
             DisplayWriteBCD(board->display, entrada, sizeof(entrada));
             timeout = 0;
         }
-
-        for (int index = 0; index < 100; index++) {
-            for (int delay = 0; delay < 200; delay++) {
-                __asm("NOP");
-            }
-        }
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
-void SysTick_Handler(void) {
-    bool current_value;
-    uint8_t hora[6];
+/* === Public function implementation ========================================================= */
 
-    DisplayRefresh(board->display);
-    current_value = ClockUpdate(reloj);
+int main(void) {
 
-    if (modo <= MOSTRANDO_HORA) {
-        ClockGetTime(reloj, hora, sizeof(hora));
-        DisplayWriteBCD(board->display, hora, sizeof(hora));
-        if (DigitalInputGetState(board->set_time) || DigitalInputGetState(board->set_alarm)) {
-            tiempo_pulsacion++;
-        } else {
-            tiempo_pulsacion = 0;
-        }
-        if (current_value) {
-            DisplayToggleDot(board->display, 1);
-        }
-        if (AlarmGetState(reloj)) {
-            DisplayToggleDot(board->display, 3);
-        }
-    }
-    timeout++;
-    if ((timeout > 30000) && (modo > MOSTRANDO_HORA)) {
-        if (ClockGetTime(reloj, hora, sizeof(hora))) {
-            CambiarModo(MOSTRANDO_HORA);
-        } else {
-            CambiarModo(SIN_CONFIGURAR);
-        }
-        timeout = 0;
+    reloj = ClockCreate(1000, SonarAlarma);
+
+    board = BoardCreate();
+
+    modo = SIN_CONFIGURAR;
+
+    SisTick_Init(1000);
+
+    CambiarModo(SIN_CONFIGURAR);
+
+    xTaskCreate(TaskSysTick, "TareaSysTick", STACK_SYSTICK, NULL, PRIORIDAD_SYSTICK, NULL);
+
+    xTaskCreate(TaskDisplayRefresh, "TareaRefrescoDisplay", STACK_DISPLAY, NULL, PRIORIDAD_DISPLAY, NULL);
+
+    xTaskCreate(TaskKeys, "TareaTeclasPrincipal", STACK_KEYS, NULL, PRIORIDAD_KEYS, NULL);
+
+    vTaskStartScheduler();
+
+    while (true) {
     }
 }
+
 /* === End of documentation ==================================================================== */
 
 /** @} End of module definition for doxygen */
